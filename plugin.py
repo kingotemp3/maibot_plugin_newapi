@@ -420,7 +420,10 @@ class NewApiSuitePlugin(MaiBotPlugin):
             fallback = defaults.get(status, defaults["UNEXPECTED"])
             return fallback.format(**{**details, "wanted_seconds": config.wanted_seconds})
 
-    async def _send_and_return(self, text: str, stream_id: str):
+    async def _send_and_return(self, text: str, stream_id: str, message: Optional[Dict[str, Any]] = None):
+        username = self._extract_username(message) if isinstance(message, dict) else None
+        if username:
+            text = f"@{username} {text}"
         if stream_id:
             await self.ctx.send.text(text, stream_id)
         return True, text, 2
@@ -433,19 +436,19 @@ class NewApiSuitePlugin(MaiBotPlugin):
             return True, "", 0
         user_id = self._extract_user_id(message)
         if user_id is None:
-            return await self._send_and_return("无法获取您的用户信息。", stream_id)
+            return await self._send_and_return("无法获取您的用户信息。", stream_id, message)
         binding = await self.core.get_user_by_qq(user_id)
         if not binding:
-            return await self._send_and_return("您尚未绑定网站ID，无法进行此操作。", stream_id)
+            return await self._send_and_return("您尚未绑定网站ID，无法进行此操作。", stream_id, message)
         profile = await self.core.get_api_user_data(binding["website_user_id"])
         if not profile:
-            return await self._send_and_return("查询失败，无法从网站获取余额信息。", stream_id)
+            return await self._send_and_return("查询失败，无法从网站获取余额信息。", stream_id, message)
         ratio = self.config.binding.quota_display_ratio
         text = (
             f"查询成功！\n网站ID: {binding['website_user_id']}\n"
             f"当前剩余额度: {profile.get('quota', 0) / ratio:.2f}"
         )
-        return await self._send_and_return(text, stream_id)
+        return await self._send_and_return(text, stream_id, message)
 
     @Command("绑定", pattern=r"^/绑定\s+(?P<website_user_id>\d+)$")
     async def cmd_bind(self, **kwargs: Any):
@@ -455,7 +458,7 @@ class NewApiSuitePlugin(MaiBotPlugin):
             return True, "", 0
         user_id = self._extract_user_id(message)
         if user_id is None:
-            return await self._send_and_return("无法获取您的用户信息。", stream_id)
+            return await self._send_and_return("无法获取您的用户信息。", stream_id, message)
         website_user_id = int(kwargs.get("matched_groups", {}).get("website_user_id", "0"))
         error_message = (
             await self._check_self_binding(user_id)
@@ -463,25 +466,25 @@ class NewApiSuitePlugin(MaiBotPlugin):
             or await self._check_id_uniqueness(website_user_id)
         )
         if error_message:
-            return await self._send_and_return(error_message, stream_id)
+            return await self._send_and_return(error_message, stream_id, message)
         if not self.config.email.enabled:
             # 未启用邮箱验证时回退旧版一次性绑定，便于未配置 SMTP 的存量部署。
             _, text = await self._perform_binding_ritual(
                 user_id, website_user_id, self._extract_username(message)
             )
-            return await self._send_and_return(text, stream_id)
+            return await self._send_and_return(text, stream_id, message)
         profile = await self.core.get_api_user_data(website_user_id)
         email_address = (profile or {}).get("email")
         if not email_address or not str(email_address).strip():
             return await self._send_and_return(
-                "该网站用户未配置邮箱，无法验证身份，请联系管理员。", stream_id
+                "该网站用户未配置邮箱，无法验证身份，请联系管理员。", stream_id, message
             )
         code = NewApiCore.generate_code()
         ttl_seconds = self.config.email.code_ttl_seconds
         if not await self.core.set_binding_verification(
             user_id, website_user_id, code, ttl_seconds
         ):
-            return await self._send_and_return("验证码生成失败，请稍后再试。", stream_id)
+            return await self._send_and_return("验证码生成失败，请稍后再试。", stream_id, message)
         sent, error = await self.core.send_verification_email(
             str(email_address).strip(), code, ttl_seconds
         )
@@ -489,12 +492,13 @@ class NewApiSuitePlugin(MaiBotPlugin):
             await self.core.clear_binding_verification(user_id)
             logger.error("[NewAPI Plugin] 发送绑定验证邮件失败: %s", error)
             return await self._send_and_return(
-                f"验证码发送失败（{error}），请联系管理员检查 SMTP 配置。", stream_id
+                f"验证码发送失败（{error}），请联系管理员检查 SMTP 配置。", stream_id, message
             )
         return await self._send_and_return(
             f"验证码已发送，请查看邮箱（注意垃圾邮件箱），用 /绑定验证 <验证码> 完成绑定。"
             f"验证码 {ttl_seconds} 秒内有效。",
             stream_id,
+            message,
         )
 
     @Command("绑定验证", pattern=r"^/绑定验证\s+(?P<code>\d{6})$")
@@ -505,22 +509,22 @@ class NewApiSuitePlugin(MaiBotPlugin):
             return True, "", 0
         user_id = self._extract_user_id(message)
         if user_id is None:
-            return await self._send_and_return("无法获取您的用户信息。", stream_id)
+            return await self._send_and_return("无法获取您的用户信息。", stream_id, message)
         code = kwargs.get("matched_groups", {}).get("code", "")
         status, details = await self.core.verify_binding_code(user_id, code)
         if status == "NOT_FOUND":
             return await self._send_and_return(
-                "请先使用 /绑定 <网站ID> 发起绑定申请。", stream_id
+                "请先使用 /绑定 <网站ID> 发起绑定申请。", stream_id, message
             )
         if status == "INVALID":
-            return await self._send_and_return("验证码错误，请检查后重试。", stream_id)
+            return await self._send_and_return("验证码错误，请检查后重试。", stream_id, message)
         if status == "LOCKED":
             return await self._send_and_return(
-                "验证码错误次数过多，已失效，请重新使用 /绑定 <网站ID> 获取新验证码。", stream_id
+                "验证码错误次数过多，已失效，请重新使用 /绑定 <网站ID> 获取新验证码。", stream_id, message
             )
         if status == "EXPIRED":
             return await self._send_and_return(
-                "验证码已过期，请重新使用 /绑定 <网站ID> 获取新验证码。", stream_id
+                "验证码已过期，请重新使用 /绑定 <网站ID> 获取新验证码。", stream_id, message
             )
         website_user_id = details["website_user_id"]
         success, text = await self._perform_binding_ritual(
@@ -528,7 +532,7 @@ class NewApiSuitePlugin(MaiBotPlugin):
         )
         if success:
             await self.core.clear_binding_verification(user_id)
-        return await self._send_and_return(text, stream_id)
+        return await self._send_and_return(text, stream_id, message)
 
     @Command("签到", pattern=r"^/签到$")
     async def cmd_checkin(self, **kwargs: Any):
@@ -538,9 +542,9 @@ class NewApiSuitePlugin(MaiBotPlugin):
             return True, "", 0
         user_id = self._extract_user_id(message)
         if user_id is None:
-            return await self._send_and_return("无法获取您的用户信息。", stream_id)
+            return await self._send_and_return("无法获取您的用户信息。", stream_id, message)
         status, details = await self.core.perform_check_in(user_id)
-        return await self._send_and_return(self._format_checkin_reply(status, details), stream_id)
+        return await self._send_and_return(self._format_checkin_reply(status, details), stream_id, message)
 
     @Command("打劫", pattern=r"^/打劫\s+(?P<identifier>\S+)$")
     async def cmd_robbery(self, **kwargs: Any):
@@ -550,12 +554,12 @@ class NewApiSuitePlugin(MaiBotPlugin):
             return True, "", 0
         robber_id = self._extract_user_id(message)
         if robber_id is None:
-            return await self._send_and_return(self.config.robbery.user_info_unavailable_template, stream_id)
+            return await self._send_and_return(self.config.robbery.user_info_unavailable_template, stream_id, message)
         victim_id = await self._resolve_target(message, kwargs.get("matched_groups", {}))
         if victim_id is None:
-            return await self._send_and_return(self.config.robbery.invalid_target_template, stream_id)
+            return await self._send_and_return(self.config.robbery.invalid_target_template, stream_id, message)
         status, details = await self.core.perform_robbery(robber_id, victim_id)
-        return await self._send_and_return(self._format_robbery_reply(status, details), stream_id)
+        return await self._send_and_return(self._format_robbery_reply(status, details), stream_id, message)
 
     @Command("解绑", pattern=r"^/解绑(?:\s+(?P<identifier>\S+))?$")
     async def cmd_unbind(self, **kwargs: Any):
@@ -564,15 +568,15 @@ class NewApiSuitePlugin(MaiBotPlugin):
         if not self._permission_allowed(message):
             return True, "", 0
         if not self._is_admin(self._extract_username(message)):
-            return await self._send_and_return("权限不足。", stream_id)
+            return await self._send_and_return("权限不足。", stream_id, message)
         identifier = await self._resolve_target(message, kwargs.get("matched_groups", {}))
         if identifier is None:
-            return await self._send_and_return("格式错误。", stream_id)
+            return await self._send_and_return("格式错误。", stream_id, message)
         binding = await self.core.lookup_binding(identifier)
         if not binding:
-            return await self._send_and_return("未找到绑定记录。", stream_id)
+            return await self._send_and_return("未找到绑定记录。", stream_id, message)
         success, _ = await self.core.purge_user_binding(binding["website_user_id"])
-        return await self._send_and_return("解绑成功。" if success else "解绑失败，已保留绑定记录以便重试。", stream_id)
+        return await self._send_and_return("解绑成功。" if success else "解绑失败，已保留绑定记录以便重试。", stream_id, message)
 
     @Command("查询", pattern=r"^/查询(?:\s+(?P<identifier>\S+))?$")
     async def cmd_lookup(self, **kwargs: Any):
@@ -581,16 +585,17 @@ class NewApiSuitePlugin(MaiBotPlugin):
         if not self._permission_allowed(message):
             return True, "", 0
         if not self._is_admin(self._extract_username(message)):
-            return await self._send_and_return("权限不足。", stream_id)
+            return await self._send_and_return("权限不足。", stream_id, message)
         identifier = await self._resolve_target(message, kwargs.get("matched_groups", {}))
         if identifier is None:
-            return await self._send_and_return("格式错误。", stream_id)
+            return await self._send_and_return("格式错误。", stream_id, message)
         binding = await self.core.lookup_binding(identifier)
         if not binding:
-            return await self._send_and_return("未找到绑定记录。", stream_id)
+            return await self._send_and_return("未找到绑定记录。", stream_id, message)
         return await self._send_and_return(
             f"查询成功！\n网站ID: {binding['website_user_id']}\n用户ID: {binding['qq_id']}",
             stream_id,
+            message,
         )
 
     @Command("调整余额", pattern=r"^/调整余额\s+(?P<identifier>\S+)\s+(?P<display_adjustment>[+-]?\d+(?:\.\d+)?)$")
@@ -600,11 +605,11 @@ class NewApiSuitePlugin(MaiBotPlugin):
         if not self._permission_allowed(message):
             return True, "", 0
         if not self._is_admin(self._extract_username(message)):
-            return await self._send_and_return("权限不足。", stream_id)
+            return await self._send_and_return("权限不足。", stream_id, message)
         matched = kwargs.get("matched_groups", {})
         identifier = await self._resolve_target(message, matched)
         if identifier is None:
-            return await self._send_and_return("格式错误。", stream_id)
+            return await self._send_and_return("格式错误。", stream_id, message)
         status, details = await self.core.adjust_balance_by_identifier(
             identifier, float(matched.get("display_adjustment", "0"))
         )
@@ -618,7 +623,7 @@ class NewApiSuitePlugin(MaiBotPlugin):
             text = "调整失败：额度展示比例配置无效。"
         else:
             text = f"调整失败: {status}"
-        return await self._send_and_return(text, stream_id)
+        return await self._send_and_return(text, stream_id, message)
 
 
 def create_plugin():

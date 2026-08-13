@@ -43,6 +43,7 @@ python -m unittest test_newapi_utils.NewApiCoreTests.test_robbery_uses_random_qu
   - 用户和管理员指令通过 SDK 的 `@Command` 声明。命令处理器从 `kwargs` 获取 `message`、`stream_id` 和 `matched_groups`，通过 `self.ctx.send.text(text, stream_id)` 发送回复，并返回 `(success, response, weight)`。
   - `_extract_user_id()`、`_extract_username()`、`_extract_mention()` 和 `_extract_stream_id()` 兼容多种 MaiBot/平台消息字典结构。权限统一由 `_permission_allowed()` 和 `_is_admin()` 检查：普通命令受频道模式和私聊开关约束，管理员命令还要求发送者的用户名位于 `permission.admin_users`（用用户名而非 ID，避免 ID 作为大整数被配置系统丢失精度）。`_extract_mention()` 按消息段的 `at`/`mention` 类型解析 `id`/`target_id`/`user_id`/`qq` 等键，也支持 Discord 消息对象顶层的 `mentions` 数组，最后用正则兜底 `<@!?id>` 与 `[CQ:at,qq=id]`；注意不要误把角色 `<@&id>`、频道 `<#id>` 识别为用户。
   - 命令的目标解析统一走 `_resolve_target()`（异步）：依次尝试 `_extract_mention()`、纯数字 `matched_groups["identifier"]`，最后若以 `@` 开头则去掉 `@` 按 `newapi_bindings.qq_username` 查绑定记录返回其 `qq_id`。这是因为某些平台适配器（如 litroenade/MaiBot-Discord-Adapter）会把消息中的 `<@ID>` 替换为 `@用户名` 文本并丢弃数字 ID，插件只能在绑定时记录用户名再反向查表。绑定流程 `_perform_binding_ritual()` 会用 `_extract_username()` 保存用户名到 `qq_username` 列。
+  - 所有命令的回复统一走 `_send_and_return(text, stream_id, message)`：若能从 `message` 提取到发送者用户名，会在回复文本前自动加上 `@用户名 ` 前缀（Discord 上的 @ 提及，非原生引用）；提取不到则维持原文。改命令回复时保持传 `message` 参数。
   - 当前命令为：`/查询余额`、`/绑定 <网站ID>`（两步绑定第一步，发邮箱验证码）、`/绑定验证 <验证码>`（两步绑定第二步）、`/签到`、`/打劫 <ID或@用户>`、管理员 `/查询 <ID或@用户>`、管理员 `/解绑 <ID或@用户>`、管理员 `/调整余额 <ID或@用户> <数额>`。
 
 - **`newapi_utils.py`** 提供 `NewApiCore`，负责本地数据、NewAPI HTTP 请求和额度业务。
